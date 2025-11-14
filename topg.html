@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Sadece Yörünge Simülasyonu - Top Terminolojisi</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.6.0/p5.js"></script>
+    <style>
+        body { font-family: sans-serif; display: flex; gap: 20px; }
+        #controls { width: 300px; padding: 15px; background-color: #fff; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        input { width: 80px; padding: 5px; border: 1px solid #ccc; border-radius: 4px; }
+        button { padding: 8px 15px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        button:hover { background-color: #0056b3; }
+        #canvasContainer { flex-grow: 1; border: 1px solid #ddd; background-color: #e0f7fa; border-radius: 8px; }
+        #mesaj { font-weight: bold; margin-top: 10px; padding: 10px; border-radius: 4px; }
+        .gol { color: #28a745; background-color: #d4edda; }
+        .hata { color: #dc3545; background-color: #f8d7da; }
+        .info { color: #0056b3; background-color: #cce5ff; }
+    </style>
+</head>
+<body>
+<div id="controls">
+    <h3>Atış Kontrolleri</h3>
+    Hız (m/s): <input type="number" id="hizInput" value="15" min="0" step="0.1"><br><br>
+    Açı (°): <input type="number" id="aciInput" value="53" min="0" max="90" step="0.1"><br><br>
+    <button id="shootBtn">Atışı Başlat</button><br><br>
+    
+    <hr>
+    
+    <h3>Sabitler: $G=10\text{ m/s}^2, \cos(53^\circ)=0.6, \sin(53^\circ)=0.8$</h3>
+    
+    <hr>
+    
+    <h3>Anlık Durum</h3>
+    <p>Süre (t): <span id="currentT">0.00</span> s</p>
+    <p>X Konumu: <span id="currentX">0.00</span> m</p>
+    <p>Y Konumu: <span id="currentY">0.00</span> m</p>
+    
+    <hr>
+    
+    <p id="mesaj"></p>
+    <p>Skor (Gol Sayısı): <span id="skor">0</span></p>
+</div>
+
+<div id="canvasContainer"></div>
+
+<script>
+// --- SABİT DEĞERLER ---
+const G = 10.0; // Yerçekimi ivmesi (m/s²)
+const COS_53_CUSTOM = 0.6;
+const SIN_53_CUSTOM = 0.8; 
+
+const DT = 0.02; 
+const KALE_X_METRIC = 19.8; // Kale X mesafesi (m)
+const KALE_Y_METRIC = 2.2; // Kale Yüksekliği (m)
+const TOP_RADIUS_TOLERANCE = 0.05; 
+const KALE_GENISLIGI_PX = 30; // Kale direği görsel kalınlığı
+
+let scale = 20; 
+let groundY; 
+
+// --- DEĞİŞKENLER ---
+let v0 = 15;
+let angle = 53;
+let t = 0;
+let x_metric = 0, y_metric = 0;
+let trajectory = []; // Yörünge noktaları hala burada tutuluyor
+let skor = 0;
+let shooting = false;
+let obstaclePassed = false; 
+
+// --- DOM ELEMANLARI ---
+const hizInput = document.getElementById('hizInput');
+const aciInput = document.getElementById('aciInput');
+const shootBtn = document.getElementById('shootBtn');
+const mesaj = document.getElementById('mesaj');
+const skorSpan = document.getElementById('skor');
+const currentTSpan = document.getElementById('currentT');
+const currentXSpan = document.getElementById('currentX');
+const currentYSpan = document.getElementById('currentY');
+
+shootBtn.addEventListener('click', () => {
+    v0 = Number(hizInput.value);
+    angle = Number(aciInput.value);
+    
+    if (isNaN(v0) || isNaN(angle) || v0 < 0 || angle < 0 || angle > 90) {
+        mesaj.innerText = "Hata: Lütfen geçerli hız ve açı girin (0-90 arası açı).";
+        mesaj.className = "hata";
+        return;
+    }
+    
+    let cosTheta = (angle === 53) ? COS_53_CUSTOM : cos(radians(angle));
+    if (Math.abs(v0 * cosTheta) < 0.01) { 
+         mesaj.innerText = "Hata: Top yatayda hareket edemez.";
+         mesaj.className = "hata";
+         return;
+    }
+    
+    resetSim();
+    shooting = true;
+    loop(); 
+});
+
+function resetSim() {
+    t = 0;
+    x_metric = 0;
+    y_metric = 0;
+    trajectory = [];
+    mesaj.innerText = "Top atışı bekleniyor...";
+    mesaj.className = "info";
+    obstaclePassed = false;
+    updateDisplay(0, 0, 0);
+}
+
+function setup() {
+    let container = document.getElementById('canvasContainer');
+    let canvas = createCanvas(container.clientWidth, 400);
+    canvas.parent('canvasContainer');
+    groundY = height - 50; 
+    noLoop(); 
+    resetSim(); 
+}
+
+function draw() {
+    background(240);
+
+    // --- Zemin ve Kale Çizimi ---
+    stroke(0);
+    line(0, groundY, width, groundY); 
+
+    let kaleXPx = KALE_X_METRIC * scale; 
+    let kaleYPx = KALE_Y_METRIC * scale; 
+    
+    // Kale çizimi (Duvar şeklinde)
+    noStroke();
+    fill(200, 50, 50, 150); 
+    rect(kaleXPx, groundY - kaleYPx, KALE_GENISLIGI_PX, kaleYPx); 
+    
+    // Kale üst çizgisini belirginleştir
+    stroke(150, 0, 0); 
+    strokeWeight(4);
+    line(kaleXPx, groundY - kaleYPx, kaleXPx + KALE_GENISLIGI_PX, groundY - kaleYPx);
+
+    // Kale etiketini yerleştir
+    fill(50);
+    textSize(14);
+    textAlign(CENTER);
+    text(`KALE (2.2m)`, kaleXPx + KALE_GENISLIGI_PX / 2, groundY - kaleYPx - 15);
+    strokeWeight(1); 
+
+    if (!shooting) return;
+
+    // --- Fizik Hesapları (Metrik) ---
+    
+    let cosTheta = (angle === 53) ? COS_53_CUSTOM : cos(radians(angle));
+    let sinTheta = (angle === 53) ? SIN_53_CUSTOM : sin(radians(angle));
+    
+    x_metric = v0 * cosTheta * t;
+    y_metric = v0 * sinTheta * t - 0.5 * G * t * t; 
+    
+    // Yere Düşme Kontrolü
+    if (y_metric < 0) {
+        y_metric = 0; 
+        
+        let finalResult = checkResult(x_metric, y_metric);
+        mesaj.innerText = finalResult.message;
+        mesaj.className = finalResult.className;
+        
+        shooting = false;
+        noLoop();
+        return;
+    }
+    
+    // Yörünge kaydı
+    trajectory.push([x_metric, y_metric]);
+
+    // --- PİKSEL KONUMLARI ---
+    let x_px = x_metric * scale;
+    let y_px = y_metric * scale;
+    
+    // --- YÖRÜNGE ÇİZİMİ ---
+    // Yörünge hala çizilir, sadece mesajlarda "top" denir
+    stroke(0,0,255);
+    strokeWeight(3); 
+    noFill();
+    beginShape();
+    for (let i = 0; i < trajectory.length; i++) {
+        let tx = trajectory[i][0] * scale;
+        let ty = trajectory[i][1] * scale;
+        vertex(tx, groundY - ty); 
+    }
+    endShape();
+    strokeWeight(1);
+    
+    // Topun merkezini gösteren küçük daire
+    fill(255, 0, 0); 
+    noStroke();
+    ellipse(x_px, groundY - y_px, 6, 6);
+
+
+    // --- ANLIK KONTROL: Top X=19.8m'ye ulaştığı an ---
+    if (!obstaclePassed && x_metric >= KALE_X_METRIC) {
+        
+        let finalResult = checkResult(x_metric, y_metric);
+        mesaj.innerText = finalResult.message;
+        mesaj.className = finalResult.className;
+        
+        if (finalResult.isGoal) {
+            skor++;
+            skorSpan.innerText = skor;
+        }
+
+        obstaclePassed = true; 
+        shooting = false;
+        noLoop();
+        return;
+    }
+
+    // --- SÜRE VE HAREKET GÜNCELLEMESİ ---
+    updateDisplay(t, x_metric, y_metric);
+    t += DT;
+
+    // --- DURDURMA KOŞULU (Çok Uzağa Gitti) ---
+    if (x_px > width) { 
+        shooting = false;
+        if (!obstaclePassed) { 
+             mesaj.innerText = "Hata: Top kaleye ulaşmadan çok uzağa gitti. 🚀";
+             mesaj.className = "hata";
+        }
+        noLoop();
+    }
+}
+
+// Sonuçları mantıksal olarak hesaplayan tek fonksiyon
+function checkResult(finalX, finalY) {
+    
+    const isGround = finalY < TOP_RADIUS_TOLERANCE;
+
+    // 1. Durum: Kale Mesafesine Ulaşıldı (X >= 19.8 m)
+    if (finalX >= KALE_X_METRIC - TOP_RADIUS_TOLERANCE) {
+        
+        // GOL Koşulu: Yere düşmediyse (Y > 0) VE kale yüksekliğini aşmadıysa (Y <= 2.2m)
+        if (!isGround && finalY <= KALE_Y_METRIC + TOP_RADIUS_TOLERANCE) {
+            return {
+                message: `GOL! ⚽ Top Kaleye Girdi! (t = ${t.toFixed(2)} s, Yükseklik: ${finalY.toFixed(2)} m)`,
+                className: "gol",
+                isGoal: true
+            };
+        }
+        
+        // Hata Koşulu 1: Kaleyi Aştı (Y > 2.2m)
+        else if (finalY > KALE_Y_METRIC + TOP_RADIUS_TOLERANCE) {
+             return {
+                message: `Hata: Top Kaleyi Aştı! (Yükseklik: ${finalY.toFixed(2)} m)`,
+                className: "hata",
+                isGoal: false
+            };
+        }
+        
+        // Hata Koşulu 2: Yere Düştü (Y=0)
+        else { 
+             return {
+                message: "Hata: Top Kaleye Ulaşamadan Yere Düştü. 💥",
+                className: "hata",
+                isGoal: false
+            };
+        }
+    }
+    
+    // 2. Durum: Kale Mesafesine Ulaşılamadan Yere Düştü (X < 19.8 m ve Y=0)
+    else {
+        return {
+             message: "Hata: Top Kaleye Ulaşamadan Yere Düştü. 💥",
+             className: "hata",
+             isGoal: false
+        };
+    }
+}
+
+function updateDisplay(t_val, x_val, y_val) {
+    currentTSpan.textContent = t_val.toFixed(2);
+    currentXSpan.textContent = x_val.toFixed(2);
+    currentYSpan.textContent = y_val.toFixed(2);
+}
+
+// Pencere boyutu değişirse canvas'ı yeniden boyutlandır
+function windowResized() {
+    let container = document.getElementById('canvasContainer');
+    resizeCanvas(container.clientWidth, 400);
+    groundY = height - 50;
+}
+</script>
+</body>
+</html>
